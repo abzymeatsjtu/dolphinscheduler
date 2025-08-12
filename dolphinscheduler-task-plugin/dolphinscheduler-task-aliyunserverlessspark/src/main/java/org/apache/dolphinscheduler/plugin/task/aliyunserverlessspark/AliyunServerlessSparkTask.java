@@ -39,6 +39,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -46,6 +47,8 @@ import com.aliyun.emr_serverless_spark20230808.Client;
 import com.aliyun.emr_serverless_spark20230808.models.CancelJobRunRequest;
 import com.aliyun.emr_serverless_spark20230808.models.GetJobRunRequest;
 import com.aliyun.emr_serverless_spark20230808.models.GetJobRunResponse;
+import com.aliyun.emr_serverless_spark20230808.models.GetTemplateRequest;
+import com.aliyun.emr_serverless_spark20230808.models.GetTemplateResponse;
 import com.aliyun.emr_serverless_spark20230808.models.JobDriver;
 import com.aliyun.emr_serverless_spark20230808.models.StartJobRunRequest;
 import com.aliyun.emr_serverless_spark20230808.models.StartJobRunResponse;
@@ -75,6 +78,8 @@ public class AliyunServerlessSparkTask extends AbstractRemoteTask {
     private String regionId;
 
     private String endpoint;
+
+    private String templateId;
 
     protected AliyunServerlessSparkTask(TaskExecutionContext taskExecutionContext) {
         super(taskExecutionContext);
@@ -199,16 +204,49 @@ public class AliyunServerlessSparkTask extends AbstractRemoteTask {
     }
 
     protected StartJobRunRequest buildStartJobRunRequest(AliyunServerlessSparkParameters aliyunServerlessSparkParameters) {
+        GetTemplateResponse getTemplateResponse;
+
+        GetTemplateRequest getTemplateRequest = new GetTemplateRequest();
+        getTemplateRequest.setTemplateBizId(templateId);
+
+        if (aliyunServerlessSparkParameters.getTemplateId() != null) {
+            getTemplateRequest.setTemplateBizId(templateId);
+        }
+
+        try {
+            getTemplateResponse = aliyunServerlessSparkClient
+                    .getTemplate(aliyunServerlessSparkParameters.getWorkspaceId(), getTemplateRequest);
+        } catch (Exception e) {
+            log.error("Failed to get serverless spark template!", e);
+            throw new AliyunServerlessSparkTaskException("Failed to get serverless spark template!");
+        }
+
+        String templateConf = getTemplateResponse.getBody()
+                .getData()
+                .getSparkConf()
+                .stream()
+                .map(item -> "--conf " + item.getKey() + "=" + item.getValue())
+                .collect(Collectors.joining(" "));
+
+        aliyunServerlessSparkParameters.setSparkSubmitParameters(
+                templateConf + " " + aliyunServerlessSparkParameters.getSparkSubmitParameters());
+
         StartJobRunRequest startJobRunRequest = new StartJobRunRequest();
         startJobRunRequest.setRegionId(regionId);
         startJobRunRequest.setResourceQueueId(aliyunServerlessSparkParameters.getResourceQueueId());
         startJobRunRequest.setCodeType(aliyunServerlessSparkParameters.getCodeType());
         startJobRunRequest.setName(aliyunServerlessSparkParameters.getJobName());
+
         String engineReleaseVersion = aliyunServerlessSparkParameters.getEngineReleaseVersion();
-        engineReleaseVersion =
-                StringUtils.isEmpty(engineReleaseVersion) ? AliyunServerlessSparkConstants.DEFAULT_ENGINE
-                        : engineReleaseVersion;
-        startJobRunRequest.setReleaseVersion(engineReleaseVersion);
+
+        if (engineReleaseVersion != null) {
+            startJobRunRequest.setReleaseVersion(engineReleaseVersion);
+        } else {
+            startJobRunRequest
+                    .setDisplayReleaseVersion(getTemplateResponse.getBody().getData().getDisplaySparkVersion());
+            startJobRunRequest.setFusion(getTemplateResponse.getBody().getData().getFusion());
+        }
+
         Tag envTag = new Tag();
         envTag.setKey(AliyunServerlessSparkConstants.ENV_KEY);
         String envType = aliyunServerlessSparkParameters.isProduction() ? AliyunServerlessSparkConstants.ENV_PROD
